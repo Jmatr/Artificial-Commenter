@@ -1,12 +1,12 @@
 import time
-import random
 import multiprocessing
-from multiprocessing import Manager
-import speech_recognition as sr
+import redis
 from openai import OpenAI
-import os
 import pyttsx3
+import ast  # To safely parse stringified dictionaries
+from speech_recognition import Recognizer, Microphone, WaitTimeoutError, UnknownValueError, RequestError
 from dotenv import load_dotenv
+import os
 
 # Load environment variables
 load_dotenv()
@@ -22,6 +22,14 @@ client = OpenAI(api_key=api_key)
 # Initialize Text-to-Speech Engine
 tts_engine = pyttsx3.init()
 
+# Connect to Redis
+redis_client = redis.Redis(
+    host='localhost',
+    port=6379,
+    db=0,
+    decode_responses=True
+)
+
 # Define streamer's personality
 streamer_personality = {
     "name": "Luna",
@@ -30,8 +38,13 @@ streamer_personality = {
     "dislikes": ["spam comments", "negative vibes"]
 }
 
-# Generate AI response with memory
-def generate_ai_response(content, personality):
+
+def generate_ai_response(content, personality, memory):
+    """
+    Generates an AI response using OpenAI GPT model, incorporating past interactions.
+    """
+    # Include memory in the conversation context
+    memory_messages = [{"role": "assistant", "content": m} for m in memory]
     messages = [
         {"role": "system", "content": f"""
         You are {personality['name']}, a virtual streamer with the following personality:
@@ -39,124 +52,121 @@ def generate_ai_response(content, personality):
         - Favorites: {', '.join(personality['favorites'])}
         - Dislikes: {', '.join(personality['dislikes'])}
 
-        Respond thoughtfully and creatively.
+        Respond thoughtfully and creatively. Start with first person, no need with words like absolutely or sure thing
+        . Luna says: is just the format to show you the previous conversation
         """},
         {"role": "user", "content": f"{content}"}
     ]
 
-    response = client.chat.completions.create(
-        model="gpt-4",
-        messages=messages,
-        max_tokens=100,
-        temperature=0.7
-    )
-
-    return response.choices[0].message.content.strip()
-
-
-# Generate random, interesting dialogue
-def generate_random_response(personality):
-    messages = [
-        {"role": "system", "content": f"""
-        You are {personality['name']}, a virtual streamer with the following personality:
-        - Background: {personality['background']}
-        - Favorites: {', '.join(personality['favorites'])}
-        - Dislikes: {', '.join(personality['dislikes'])}
-
-        Generate a random, interesting thought.
-        """}
-    ]
+    # Combine memory and new messages
+    messages = memory_messages + messages
 
     response = client.chat.completions.create(
         model="gpt-4",
         messages=messages,
-        max_tokens=100,
-        temperature=0.9
+        max_tokens=200,
+        temperature=0.5
     )
 
     return response.choices[0].message.content.strip()
 
-
-# Speak the response using pyttsx3
 def speak_response(response):
+    """
+    Speaks the AI-generated response using pyttsx3.
+    """
     tts_engine.say(response)
     tts_engine.runAndWait()
 
+def subscribe_to_comments(comment_pool):
+    """
+    Subscribes to the Redis channel to receive and store comments in the comment pool.
+    """
+    pubsub = redis_client.pubsub()
+    pubsub.subscribe("comment_channel")
+    print("Subscribed to comment channel...")
 
-# Process to listen to user speech
+    for message in pubsub.listen():
+        if message["type"] == "message":
+            comment = ast.literal_eval(message["data"])  # Safely parse stringified dict
+            print(f"Received comment: {comment}")
+            comment_pool.append(comment)
+
 def listen_to_user(user_pool):
-    recognizer = sr.Recognizer()
+    """
+    Listens for user input via speech and adds it to the user pool.
+    """
+    recognizer = Recognizer()
     while True:
         try:
-            with sr.Microphone() as source:
+            with Microphone() as source:
                 print("Listening for user input... (Say 'Hi Luna')")
                 recognizer.adjust_for_ambient_noise(source)
-                audio = recognizer.listen(source, timeout=10)
+                audio = recognizer.listen(source, timeout=5)
                 user_input = recognizer.recognize_google(audio)
 
                 if "hi luna" in user_input.lower():
                     print(f"User said: {user_input}")
                     user_pool.append(user_input)
-        except sr.WaitTimeoutError:
+        except WaitTimeoutError:
             continue
-        except sr.UnknownValueError:
+        except UnknownValueError:
             print("Could not understand the user.")
-        except sr.RequestError:
+        except RequestError:
             print("Speech recognition service unavailable.")
 
-
-# Process to simulate adding comments
-def generate_comments(comment_pool):
+def luna_responder(user_pool, comment_pool, memory):
+    """
+    Luna responds based on user input, viewer comments, or generates random thoughts.
+    """
     while True:
-        time.sleep(random.randint(5, 15))  # Simulate random new comments
-        comment = f"Random viewer comment {random.randint(1, 100)}"
-        likes = random.randint(1, 10)
-        print(f"New comment added: {comment} (Likes: {likes})")
-        comment_pool.append({"text": comment, "likes": likes})
-
-
-# Decision-making process for Luna
-def luna_responder(user_pool, comment_pool):
-    while True:
-        time.sleep(5)  # Wait 5 second for next response
+        time.sleep(5)  # Process every 5 seconds
 
         if user_pool:
             # Respond to user input
             user_input = user_pool.pop(0)
-            response = generate_ai_response(user_input, streamer_personality)
+            response = generate_ai_response(user_input, streamer_personality, memory)
             print(f"Luna says (to user): {response}")
             speak_response(response)
+            memory.append(f"User: {user_input}\nLuna: {response}")
         elif comment_pool:
             # Respond to most liked comment
             top_comment = max(comment_pool, key=lambda c: c["likes"])
-            response = generate_ai_response(top_comment["text"], streamer_personality)
+            response = generate_ai_response(top_comment["text"], streamer_personality, memory)
             print(f"Luna says (to comment): {response}")
             speak_response(response)
             comment_pool.remove(top_comment)
+            memory.append(f"Comment: {top_comment['text']}\nLuna: {response}")
         else:
             # Generate random thought
-            response = generate_random_response(streamer_personality)
+            response = generate_ai_response("Generate something interesting! No need to start with absolutely or"
+                                            " sure thing. Be concise with around 100 words", streamer_personality, memory)
             print(f"Luna says (random thought): {response}")
             speak_response(response)
+            memory.append(f"Luna: {response}")
 
+        # Prune memory if it exceeds a certain size
+        if len(memory) > 10:
+            memory.pop(0)
 
-# Main function to set up multiprocessing
 if __name__ == "__main__":
-    manager = Manager()
-    user_pool = manager.list()  # Shared list for user speech input
-    comment_pool = manager.list()  # Shared list for comments
+    # Create shared resources
+    comment_pool = multiprocessing.Manager().list()
+    user_pool = multiprocessing.Manager().list()
+    # Memory for past interactions
+    memory = multiprocessing.Manager().list()
 
     # Set up processes
+    comment_process = multiprocessing.Process(target=subscribe_to_comments, args=(comment_pool,))
     user_process = multiprocessing.Process(target=listen_to_user, args=(user_pool,))
-    comment_process = multiprocessing.Process(target=generate_comments, args=(comment_pool,))
-    responder_process = multiprocessing.Process(target=luna_responder, args=(user_pool, comment_pool))
+    responder_process = multiprocessing.Process(target=luna_responder, args=(user_pool, comment_pool, memory))
 
     # Start processes
-    user_process.start()
     comment_process.start()
+    user_process.start()
     responder_process.start()
 
     # Keep main process alive
-    user_process.join()
     comment_process.join()
+    user_process.join()
     responder_process.join()
+
