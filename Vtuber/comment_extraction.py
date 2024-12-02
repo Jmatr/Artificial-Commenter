@@ -1,127 +1,132 @@
-from chat_downloader import ChatDownloader
-from transformers import pipeline, AutoModelForCausalLM, AutoTokenizer
-import pandas as pd
-import re
+import time
+import random
+from dotenv import load_dotenv
+import os
+from openai import OpenAI
 
-# Step 1: Initialize Sentiment Analysis Pipeline and Chatbot Model
-sentiment_analyzer = pipeline("sentiment-analysis", framework="tf")
-tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
-model = AutoModelForCausalLM.from_pretrained("microsoft/DialoGPT-medium")
+load_dotenv()
+api_key = os.getenv("OPENAI_API_KEY")
+if not api_key:
+    raise ValueError("API key not found. Set the OPENAI_API_KEY environment variable.")
 
-# Preprocess Messages (Handle Emojis)
-def preprocess_message(text):
-    """
-    Preprocess chat messages to identify and handle non-standard emojis in the format :text:.
-    Args:
-        text (str): Original chat message
-    Returns:
-        str: Processed message
-    """
-    emoji_pattern = r":([a-zA-Z0-9_]+):"
-    return re.sub(emoji_pattern, r"[EMOJI: \1]", text)
+# Initialize OpenAI Client
+client = OpenAI(api_key=api_key)
 
-# Step 2: Fetch YouTube Comments
-def fetch_chat_comments(url, max_comments=1000):
-    """
-    Fetch comments from a YouTube video using ChatDownloader.
-    Args:
-        url (str): URL of the YouTube video
-        max_comments (int): Maximum number of comments to fetch
-    Returns:
-        list of dict: List of messages with timestamps and authors
-    """
-    chat = ChatDownloader().get_chat(url)
-    comments = []
-    for i, message in enumerate(chat):
-        if i >= max_comments:
-            break
-        text = message.get("message", "")
-        author_name = message.get("author", {}).get("name", "Anonymous")
-        timestamp = message.get("time_in_seconds", None)
+# Define streamer's personality
+streamer_personality = {
+    "name": "Luna",
+    "background": "A cheerful AI streamer who loves space exploration and sci-fi.",
+    "favorites": ["stars", "video games", "blue color", "cats"],
+    "dislikes": ["spam comments", "negative vibes"]
+}
 
-        # Preprocess text
-        cleaned_text = preprocess_message(text)
+# Simulate a comment section (replace this with real data in a live system)
+comments = [
+    {"text": "What's your favorite sci-fi movie?", "likes": 5, "timestamp": time.time()},
+    {"text": "I love space too!", "likes": 3, "timestamp": time.time()},
+    {"text": "Just dropping by to say hi!", "likes": 1, "timestamp": time.time()}
+]
 
-        # Perform sentiment analysis
-        sentiment = sentiment_analyzer(cleaned_text)[0]
+# Memory to store past interactions
+memory = []
+MAX_MEMORY = 10  # Limit memory to the last 10 interactions
 
-        # Convert timestamp to minutes
-        if timestamp is not None:
-            minute = int(timestamp // 60)
-        else:
-            minute = "N/A"
 
-        if text:
-            comments.append({
-                "minute": minute,
-                "author_name": author_name,
-                "text": cleaned_text,
-                "sentiment": sentiment["label"],
-                "score": sentiment["score"],
-                "length": len(cleaned_text),  # Information density metric
-                "unique_words": len(set(cleaned_text.split()))  # Another metric
-            })
-    return comments
+# Function to determine the most important comment
+def get_most_important_comment(comments):
+    if not comments:
+        return None
+    return max(comments, key=lambda c: c["likes"])
 
-# Step 3: Identify the Most Important Comment
-def select_important_comments(comments):
-    """
-    Identify the most important comment per minute interval based on information density.
-    Args:
-        comments (list of dict): List of comments with metadata
-    Returns:
-        list of dict: Most important comment for each minute
-    """
-    df = pd.DataFrame(comments)
-    df = df[df["minute"] != "N/A"]  # Filter out invalid timestamps
 
-    # Define importance metric (e.g., longest comment, highest sentiment score)
-    df["importance"] = df["length"] * df["unique_words"] * df["score"]
+# Generate AI response using memory
+def generate_ai_response(comment, personality, memory):
+    # Build memory into the message
+    memory_messages = [{"role": "assistant", "content": mem} for mem in memory]
 
-    # Select the most important comment per minute
-    important_comments = df.loc[df.groupby("minute")["importance"].idxmax()].to_dict("records")
-    return important_comments
+    # System and user prompt
+    messages = [
+        {"role": "system", "content": f"""
+        You are {personality['name']}, a virtual streamer with the following personality:
+        - Background: {personality['background']}
+        - Favorites: {', '.join(personality['favorites'])}
+        - Dislikes: {', '.join(personality['dislikes'])}
 
-# Step 4: Generate Responses
-def generate_response(comment, sentiment):
-    """
-    Generate an intelligent response using DialoGPT.
-    Args:
-        comment (str): The user's comment
-        sentiment (str): Sentiment label (POSITIVE, NEGATIVE, NEUTRAL)
-    Returns:
-        str: AI-generated response.
-    """
-    # Create the prompt
-    prompt = f"The user said: {comment}. Sentiment: {sentiment}. Respond appropriately:"
+        Respond thoughtfully, referencing past interactions when appropriate.
+        """},
+        {"role": "user", "content": f"A viewer commented: \"{comment}\""}
+    ]
 
-    # Tokenize and generate response
-    inputs = tokenizer.encode(prompt, return_tensors="pt")
-    outputs = model.generate(inputs, max_length=100, num_return_sequences=1, pad_token_id=tokenizer.eos_token_id)
+    # Combine memory and new messages
+    messages = memory_messages + messages
 
-    # Decode and return only the response text
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    return response
+    response = client.chat.completions.create(
+        model="gpt-4",
+        messages=messages,
+        max_tokens=100,
+        temperature=0.7
+    )
 
-# Step 5: Main Script
-if __name__ == "__main__":
-    # YouTube video URL
-    video_url = "https://www.youtube.com/watch?v=cOo10ndXtmk"
+    return response.choices[0].message.content.strip()
 
-    # Fetch comments
-    print("Fetching comments...")
-    comments = fetch_chat_comments(video_url)
 
-    # Select the most important comments per minute
-    print("Selecting most important comments...")
-    important_comments = select_important_comments(comments)
+# Generate random responses dynamically
+def generate_random_response(personality):
+    """Generate a random, interesting response using OpenAI."""
+    messages = [
+        {"role": "system", "content": f"""
+        You are {personality['name']}, a virtual streamer with the following personality:
+        - Background: {personality['background']}
+        - Favorites: {', '.join(personality['favorites'])}
+        - Dislikes: {', '.join(personality['dislikes'])}
 
-    # Generate and display responses
-    print("\nMost Important Comments and AI Responses:")
-    for comment in important_comments:
-        response = generate_response(comment["text"], comment["sentiment"])
-        print(f"Minute: {comment['minute']}")
-        print(f"Author: {comment['author_name']} | Sentiment: {comment['sentiment']}")
-        print(f"Comment: {comment['text']}")
-        print(f"AI Reply: {response}")
-        print("-" * 50)
+        Generate a random and interesting thought or comment to share with viewers.
+        """}
+    ]
+
+    response = client.chat.completions.create(
+        model="gpt-4",
+        messages=messages,
+        max_tokens=100,
+        temperature=0.9  # Higher temperature for creativity
+    )
+
+    return response.choices[0].message.content.strip()
+
+
+# Main loop for the virtual streamer
+def streamer_loop():
+    last_response_time = time.time()
+
+    while True:
+        current_time = time.time()
+        if current_time - last_response_time >= 30:  # Check if 30 seconds have passed
+            important_comment = get_most_important_comment(comments)
+
+            if important_comment:
+                ai_response = generate_ai_response(important_comment["text"], streamer_personality, memory)
+                print(f"Luna says: {ai_response}")
+
+                # Add response to memory
+                memory.append(ai_response)
+                if len(memory) > MAX_MEMORY:
+                    memory.pop(0)  # Maintain memory limit
+
+                # Remove the handled comment
+                comments.remove(important_comment)
+            else:
+                random_response = generate_random_response(streamer_personality)
+                print(f"Luna says: {random_response}")
+
+                # Add random response to memory
+                memory.append(random_response)
+                if len(memory) > MAX_MEMORY:
+                    memory.pop(0)
+
+            last_response_time = current_time
+
+        time.sleep(1)  # Avoid CPU overuse in the loop
+
+
+# Run the streamer
+streamer_loop()
