@@ -2,11 +2,10 @@ import time
 import multiprocessing
 import redis
 from openai import OpenAI
-import ast
 import requests
-from speech_recognition import Recognizer, Microphone, WaitTimeoutError, UnknownValueError, RequestError
 from dotenv import load_dotenv
 import os
+import ast
 
 # Load environment variables
 load_dotenv()
@@ -29,8 +28,8 @@ redis_client = redis.Redis(
 
 # Define streamer's personality
 streamer_personality = {
-    "name": "Luna",
-    "background": "A cheerful AI streamer who loves space exploration and sci-fi.",
+    "name": "Aelina",
+    "background": "A cheerful AI streamer who loves space exploration and sci-fi. Likes to do weird but funny stuff.",
     "favorites": ["stars", "video games", "blue color", "cats"],
     "dislikes": ["spam comments", "negative vibes"],
 }
@@ -49,9 +48,10 @@ def generate_ai_response(content, personality, memory):
         - Favorites: {', '.join(personality['favorites'])}
         - Dislikes: {', '.join(personality['dislikes'])}
 
-        Respond thoughtfully and creatively. Do not start with Luna, this is just letting you know 
-        what you said previously. Do not start with words like absolutely or sure thing. You do not need to confirm and 
-        just proceed straight to the topic.
+        Respond thoughtfully and creatively. You can create things in your response, be attractive to viewers. If the 
+        prompt is in chinese, respond with chinese simplified. Do not start with you name, this is just letting you know 
+        what you said previously. Do not start with words such as absolutely, sure thing or alright. You do not need to 
+        confirm and just proceed straight to the topic.
         """},
         {"role": "user", "content": content},
     ]
@@ -61,7 +61,7 @@ def generate_ai_response(content, personality, memory):
         model="gpt-4",
         messages=messages,
         max_tokens=200,
-        temperature=0.6,
+        temperature=0.4,
     )
     return response.choices[0].message.content.strip()
 
@@ -82,6 +82,15 @@ def speak_response(response):
     except Exception as e:
         print(f"Error calling TTS service: {str(e)}")
 
+def fetch_user_input(user_pool):
+    """
+    Fetches user input from the Redis queue.
+    """
+    while True:
+        user_input = redis_client.rpop("user_input_queue")
+        if user_input:
+            user_pool.append(user_input)
+        time.sleep(1)
 
 def subscribe_to_comments(comment_pool):
     """
@@ -97,55 +106,31 @@ def subscribe_to_comments(comment_pool):
             print(f"Received comment: {comment}")
             comment_pool.append(comment)
 
-def listen_to_user(user_pool):
+def responder(user_pool, comment_pool, memory):
     """
-    Listens for user input via speech and adds it to the user pool.
-    """
-    recognizer = Recognizer()
-    while True:
-        try:
-            with Microphone() as source:
-                print("Listening for user input... (Say 'Luna')")
-                recognizer.adjust_for_ambient_noise(source)
-                audio = recognizer.listen(source, timeout=5)
-                user_input = recognizer.recognize_google(audio)
-
-                if "luna" in user_input.lower():
-                    print(f"User said: {user_input}")
-                    user_pool.append(user_input)
-        except WaitTimeoutError:
-            continue
-        except UnknownValueError:
-            print("Could not understand the user.")
-        except RequestError:
-            print("Speech recognition service unavailable.")
-
-
-def luna_responder(user_pool, comment_pool, memory):
-    """
-    Luna responds based on user input, viewer comments, or generates random thoughts.
+    Virtual streamer responds based on user input, viewer comments, or generates random thoughts.
     """
     while True:
-        time.sleep(5)
+        time.sleep(1)
 
         if user_pool:
             user_input = user_pool.pop(0)
             response = generate_ai_response(user_input, streamer_personality, memory)
-            print(f"Luna says (to user): {response}")
+            print(f"Aelina says (to user): {response}")
             speak_response(response)
             memory.append(f"User: {user_input}\nLuna: {response}")
         elif comment_pool:
             top_comment = max(comment_pool, key=lambda c: c["likes"])
             response = generate_ai_response(top_comment["text"], streamer_personality, memory)
-            print(f"Luna says (to comment): {response}")
+            print(f"Aelina says (to comment): {response}")
             speak_response(response)
             comment_pool.remove(top_comment)
             memory.append(f"Comment: {top_comment['text']}\nLuna: {response}")
         else:
-            response = generate_ai_response("Generate something interesting!", streamer_personality, memory)
-            print(f"Luna says (random thought): {response}")
+            response = generate_ai_response("Generate something interesting! Be within 150 words.", streamer_personality, memory)
+            print(f"Aelina says (random thought): {response}")
             speak_response(response)
-            memory.append(f"Luna (random): {response}")
+            memory.append(f"Aelina (random): {response}")
 
         if len(memory) > 10:
             memory.pop(0)
@@ -155,17 +140,17 @@ if __name__ == "__main__":
     user_pool = multiprocessing.Manager().list()
     memory = multiprocessing.Manager().list()
 
-    # Set up processes
+    # Fetch user input from Redis
+    input_process = multiprocessing.Process(target=fetch_user_input, args=(user_pool,))
     comment_process = multiprocessing.Process(target=subscribe_to_comments, args=(comment_pool,))
-    user_process = multiprocessing.Process(target=listen_to_user, args=(user_pool,))
-    responder_process = multiprocessing.Process(target=luna_responder, args=(user_pool, comment_pool, memory))
+    responder_process = multiprocessing.Process(target=responder, args=(user_pool, comment_pool, memory))
 
     # Start processes
+    input_process.start()
     comment_process.start()
-    user_process.start()
     responder_process.start()
 
     # Keep main process alive
+    input_process.join()
     comment_process.join()
-    user_process.join()
     responder_process.join()
