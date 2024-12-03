@@ -2,8 +2,8 @@ import time
 import multiprocessing
 import redis
 from openai import OpenAI
-import pyttsx3
-import ast  # To safely parse stringified dictionaries
+import ast
+import requests
 from speech_recognition import Recognizer, Microphone, WaitTimeoutError, UnknownValueError, RequestError
 from dotenv import load_dotenv
 import os
@@ -11,7 +11,7 @@ import os
 # Load environment variables
 load_dotenv()
 
-# Initialize OpenAI API key from environment variable
+# Initialize OpenAI API key
 api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
     raise ValueError("API key not found. Set the OPENAI_API_KEY environment variable.")
@@ -19,15 +19,12 @@ if not api_key:
 # Initialize OpenAI Client
 client = OpenAI(api_key=api_key)
 
-# Initialize Text-to-Speech Engine
-tts_engine = pyttsx3.init()
-
 # Connect to Redis
 redis_client = redis.Redis(
-    host='localhost',
+    host="localhost",
     port=6379,
     db=0,
-    decode_responses=True
+    decode_responses=True,
 )
 
 # Define streamer's personality
@@ -35,15 +32,15 @@ streamer_personality = {
     "name": "Luna",
     "background": "A cheerful AI streamer who loves space exploration and sci-fi.",
     "favorites": ["stars", "video games", "blue color", "cats"],
-    "dislikes": ["spam comments", "negative vibes"]
+    "dislikes": ["spam comments", "negative vibes"],
 }
 
+TTS_SERVICE_URL = "http://localhost:5000/synthesize"
 
 def generate_ai_response(content, personality, memory):
     """
     Generates an AI response using OpenAI GPT model, incorporating past interactions.
     """
-    # Include memory in the conversation context
     memory_messages = [{"role": "assistant", "content": m} for m in memory]
     messages = [
         {"role": "system", "content": f"""
@@ -52,30 +49,39 @@ def generate_ai_response(content, personality, memory):
         - Favorites: {', '.join(personality['favorites'])}
         - Dislikes: {', '.join(personality['dislikes'])}
 
-        Respond thoughtfully and creatively. Start with first person, no need with words like absolutely or sure thing
-        . Luna says: is just the format to show you the previous conversation
+        Respond thoughtfully and creatively. Do not start with Luna, this is just letting you know 
+        what you said previously. Do not start with words like absolutely or sure thing. You do not need to confirm and 
+        just proceed straight to the topic.
         """},
-        {"role": "user", "content": f"{content}"}
+        {"role": "user", "content": content},
     ]
-
-    # Combine memory and new messages
     messages = memory_messages + messages
 
     response = client.chat.completions.create(
         model="gpt-4",
         messages=messages,
         max_tokens=200,
-        temperature=0.5
+        temperature=0.6,
     )
-
     return response.choices[0].message.content.strip()
 
 def speak_response(response):
     """
-    Speaks the AI-generated response using pyttsx3.
+    Sends the response text to the TTS service.
     """
-    tts_engine.say(response)
-    tts_engine.runAndWait()
+    try:
+        res = requests.post(TTS_SERVICE_URL, json={"text": response})
+        if res.status_code == 200:
+            result = res.json()
+            if result["status"] == "success":
+                print("Speech synthesized successfully.")
+            else:
+                print(f"Error synthesizing speech: {result['message']}")
+        else:
+            print(f"TTS service error: {res.text}")
+    except Exception as e:
+        print(f"Error calling TTS service: {str(e)}")
+
 
 def subscribe_to_comments(comment_pool):
     """
@@ -99,12 +105,12 @@ def listen_to_user(user_pool):
     while True:
         try:
             with Microphone() as source:
-                print("Listening for user input... (Say 'Hi Luna')")
+                print("Listening for user input... (Say 'Luna')")
                 recognizer.adjust_for_ambient_noise(source)
                 audio = recognizer.listen(source, timeout=5)
                 user_input = recognizer.recognize_google(audio)
 
-                if "hi luna" in user_input.lower():
+                if "luna" in user_input.lower():
                     print(f"User said: {user_input}")
                     user_pool.append(user_input)
         except WaitTimeoutError:
@@ -114,22 +120,21 @@ def listen_to_user(user_pool):
         except RequestError:
             print("Speech recognition service unavailable.")
 
+
 def luna_responder(user_pool, comment_pool, memory):
     """
     Luna responds based on user input, viewer comments, or generates random thoughts.
     """
     while True:
-        time.sleep(5)  # Process every 5 seconds
+        time.sleep(5)
 
         if user_pool:
-            # Respond to user input
             user_input = user_pool.pop(0)
             response = generate_ai_response(user_input, streamer_personality, memory)
             print(f"Luna says (to user): {response}")
             speak_response(response)
             memory.append(f"User: {user_input}\nLuna: {response}")
         elif comment_pool:
-            # Respond to most liked comment
             top_comment = max(comment_pool, key=lambda c: c["likes"])
             response = generate_ai_response(top_comment["text"], streamer_personality, memory)
             print(f"Luna says (to comment): {response}")
@@ -137,22 +142,17 @@ def luna_responder(user_pool, comment_pool, memory):
             comment_pool.remove(top_comment)
             memory.append(f"Comment: {top_comment['text']}\nLuna: {response}")
         else:
-            # Generate random thought
-            response = generate_ai_response("Generate something interesting! No need to start with absolutely or"
-                                            " sure thing. Be concise with around 100 words", streamer_personality, memory)
+            response = generate_ai_response("Generate something interesting!", streamer_personality, memory)
             print(f"Luna says (random thought): {response}")
             speak_response(response)
-            memory.append(f"Luna: {response}")
+            memory.append(f"Luna (random): {response}")
 
-        # Prune memory if it exceeds a certain size
         if len(memory) > 10:
             memory.pop(0)
 
 if __name__ == "__main__":
-    # Create shared resources
     comment_pool = multiprocessing.Manager().list()
     user_pool = multiprocessing.Manager().list()
-    # Memory for past interactions
     memory = multiprocessing.Manager().list()
 
     # Set up processes
@@ -169,4 +169,3 @@ if __name__ == "__main__":
     comment_process.join()
     user_process.join()
     responder_process.join()
-
