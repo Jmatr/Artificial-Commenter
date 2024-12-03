@@ -46,8 +46,8 @@ The system is built with modular components to handle different aspects of the s
 ### Steps
 1. Clone the repository:
    ```bash
-   git clone https://github.com/Jmatr/Artificial-Commenter
-   cd aelina-virtual-streamer
+   git clone https://github.com/Jmatr/virtual-streamer-Aelina
+   cd virtual-streamer-Aelina
    ```
 2. Install required Python packages:
    ```bash
