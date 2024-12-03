@@ -11,6 +11,9 @@ from datetime import datetime, timedelta
 # Load environment variables
 load_dotenv()
 
+# Load personality
+personality_file = "personality.txt"
+
 # Initialize OpenAI API key
 api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
@@ -27,15 +30,32 @@ redis_client = redis.Redis(
     decode_responses=True,
 )
 
-# Define streamer's personality
-streamer_personality = {
-    "name": "Aelina",
-    "background": "A cheerful AI streamer who loves space exploration and sci-fi. Likes to do weird but funny stuff.",
-    "favorites": ["stars", "video games", "blue color", "cats"],
-    "dislikes": ["spam comments", "negative vibes"],
-}
-
 TTS_SERVICE_URL = "http://localhost:5000/synthesize"
+
+def load_personality(filename):
+    """
+    Loads the streamer personality from a text file.
+    """
+    personality = {}
+    try:
+        with open(filename, "r") as file:
+            for line in file:
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    key = key.strip().lower()
+                    value = value.strip()
+                    if "," in value:  # Convert comma-separated values into a list
+                        value = [v.strip() for v in value.split(",")]
+                    personality[key] = value
+    except FileNotFoundError:
+        print(f"Error: Personality file '{filename}' not found.")
+        exit(1)
+    except Exception as e:
+        print(f"Error loading personality file: {e}")
+        exit(1)
+    return personality
+
+streamer_personality = load_personality(personality_file)
 
 def generate_ai_response(content, personality, memory):
     """
@@ -49,20 +69,16 @@ def generate_ai_response(content, personality, memory):
         - Favorites: {', '.join(personality['favorites'])}
         - Dislikes: {', '.join(personality['dislikes'])}
 
-        You are currently streaming, respond thoughtfully and creatively. You can create things in your response, 
-        be attractive to viewers. If the comment or conversation is in chinese, respond with chinese simplified. Do not 
-        start with you name, this is just letting you know what you said previously. Do not start with words such as 
-        absolutely, sure thing or alright. You do not need to confirm and just proceed straight to the topic. You can
-        see the past dialogs, be consistent if mentioned.
+        {personality['prompt']}
         """},
         {"role": "user", "content": content},
     ]
     messages = memory_messages + messages
 
     response = client.chat.completions.create(
-        model="gpt-4",
+        model="gpt-4o",
         messages=messages,
-        max_tokens=150,
+        max_tokens=300,
         temperature=0.4,
     )
     return response.choices[0].message.content.strip()
@@ -109,7 +125,6 @@ def subscribe_to_comments(comment_pool):
             print(f"Received comment: {comment}")
             comment_pool.append(comment)
 
-
 def clean_comment_pool(comment_pool, interval=30):
     """
     Periodically removes comments older than 2 minutes from the comment pool.
@@ -119,7 +134,6 @@ def clean_comment_pool(comment_pool, interval=30):
         now = datetime.now()
         comment_pool[:] = [c for c in comment_pool if now - c["timestamp"] <= timedelta(minutes=2)]
         print(f"Cleaned comment pool. Remaining comments: {len(comment_pool)}")
-
 
 def responder(user_pool, comment_pool, memory):
     """
@@ -133,16 +147,16 @@ def responder(user_pool, comment_pool, memory):
             response = generate_ai_response(user_input, streamer_personality, memory)
             print(f"Aelina says (to user): {response}")
             speak_response(response)
-            memory.append(f"User: {user_input}\nLuna: {response}")
+            memory.append(f"User: {user_input}\nAelina: {response}")
         elif comment_pool:
             top_comment = max(comment_pool, key=lambda c: c["likes"])
             response = generate_ai_response(top_comment["text"], streamer_personality, memory)
             print(f"Aelina says (to comment): {response}")
             speak_response(response)
             comment_pool.remove(top_comment)
-            memory.append(f"Comment: {top_comment['text']}\nLuna: {response}")
+            memory.append(f"Comment: {top_comment['text']}\nAelina: {response}")
         else:
-            response = generate_ai_response("Generate something interesting! Be within 100 words.", streamer_personality, memory)
+            response = generate_ai_response("Say something random and interesting! Think what streamer will do to heatup the stream. Be within 4 sentences.", streamer_personality, memory)
             print(f"Aelina says (random thought): {response}")
             speak_response(response)
             memory.append(f"Aelina (random): {response}")
@@ -151,6 +165,9 @@ def responder(user_pool, comment_pool, memory):
             memory.pop(0)
 
 if __name__ == "__main__":
+    # Load streamer personality from file
+    # streamer_personality = load_personality(personality_file)
+
     comment_pool = multiprocessing.Manager().list()
     user_pool = multiprocessing.Manager().list()
     memory = multiprocessing.Manager().list()
