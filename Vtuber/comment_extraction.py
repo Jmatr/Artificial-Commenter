@@ -18,7 +18,7 @@ def extract_comments():
     while True:
         # Simulate a new comment
         comment = {
-            "text": f"Viewer comment {random.randint(1, 100)}",
+            "text": f"Viewer comment something interesting {random.randint(1, 100)}",
             "likes": random.randint(1, 10),
         }
 

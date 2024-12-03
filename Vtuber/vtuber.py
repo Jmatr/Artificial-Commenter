@@ -6,6 +6,7 @@ import requests
 from dotenv import load_dotenv
 import os
 import ast
+from datetime import datetime, timedelta
 
 # Load environment variables
 load_dotenv()
@@ -48,10 +49,11 @@ def generate_ai_response(content, personality, memory):
         - Favorites: {', '.join(personality['favorites'])}
         - Dislikes: {', '.join(personality['dislikes'])}
 
-        Respond thoughtfully and creatively. You can create things in your response, be attractive to viewers. If the 
-        prompt is in chinese, respond with chinese simplified. Do not start with you name, this is just letting you know 
-        what you said previously. Do not start with words such as absolutely, sure thing or alright. You do not need to 
-        confirm and just proceed straight to the topic.
+        You are currently streaming, respond thoughtfully and creatively. You can create things in your response, 
+        be attractive to viewers. If the comment or conversation is in chinese, respond with chinese simplified. Do not 
+        start with you name, this is just letting you know what you said previously. Do not start with words such as 
+        absolutely, sure thing or alright. You do not need to confirm and just proceed straight to the topic. You can
+        see the past dialogs, be consistent if mentioned.
         """},
         {"role": "user", "content": content},
     ]
@@ -60,7 +62,7 @@ def generate_ai_response(content, personality, memory):
     response = client.chat.completions.create(
         model="gpt-4",
         messages=messages,
-        max_tokens=200,
+        max_tokens=150,
         temperature=0.4,
     )
     return response.choices[0].message.content.strip()
@@ -103,8 +105,21 @@ def subscribe_to_comments(comment_pool):
     for message in pubsub.listen():
         if message["type"] == "message":
             comment = ast.literal_eval(message["data"])  # Safely parse stringified dict
+            comment["timestamp"] = datetime.now()  # Add timestamp
             print(f"Received comment: {comment}")
             comment_pool.append(comment)
+
+
+def clean_comment_pool(comment_pool, interval=30):
+    """
+    Periodically removes comments older than 2 minutes from the comment pool.
+    """
+    while True:
+        time.sleep(interval)
+        now = datetime.now()
+        comment_pool[:] = [c for c in comment_pool if now - c["timestamp"] <= timedelta(minutes=2)]
+        print(f"Cleaned comment pool. Remaining comments: {len(comment_pool)}")
+
 
 def responder(user_pool, comment_pool, memory):
     """
@@ -127,7 +142,7 @@ def responder(user_pool, comment_pool, memory):
             comment_pool.remove(top_comment)
             memory.append(f"Comment: {top_comment['text']}\nLuna: {response}")
         else:
-            response = generate_ai_response("Generate something interesting! Be within 150 words.", streamer_personality, memory)
+            response = generate_ai_response("Generate something interesting! Be within 100 words.", streamer_personality, memory)
             print(f"Aelina says (random thought): {response}")
             speak_response(response)
             memory.append(f"Aelina (random): {response}")
@@ -144,13 +159,16 @@ if __name__ == "__main__":
     input_process = multiprocessing.Process(target=fetch_user_input, args=(user_pool,))
     comment_process = multiprocessing.Process(target=subscribe_to_comments, args=(comment_pool,))
     responder_process = multiprocessing.Process(target=responder, args=(user_pool, comment_pool, memory))
+    cleanup_process = multiprocessing.Process(target=clean_comment_pool, args=(comment_pool,))
 
     # Start processes
     input_process.start()
     comment_process.start()
     responder_process.start()
+    cleanup_process.start()
 
     # Keep main process alive
     input_process.join()
     comment_process.join()
     responder_process.join()
+    cleanup_process.start()
